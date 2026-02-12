@@ -146,3 +146,91 @@ async def insert_trades(
         await db.commit()
 
     return inserted
+
+
+async def add_note(
+    discord_id: str, trade_id: str, note: str, db_path: str = DEFAULT_DB_PATH
+) -> bool:
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute(
+            """
+            UPDATE trades
+            SET note = ?
+            WHERE user_discord_id = ? AND trade_id = ?
+            """,
+            (note, discord_id, trade_id),
+        )
+        await db.commit()
+        return max(cursor.rowcount, 0) > 0
+
+
+async def list_trades(
+    discord_id: str,
+    since_ms: int,
+    limit: int,
+    offset: int,
+    symbol: str | None = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> tuple[list[dict[str, Any]], int]:
+    async with aiosqlite.connect(db_path) as db:
+        db.row_factory = aiosqlite.Row
+
+        if symbol:
+            count_sql = """
+                SELECT COUNT(*) AS total
+                FROM trades
+                WHERE user_discord_id = ?
+                  AND timestamp_ms >= ?
+                  AND symbol = ?
+            """
+            rows_sql = """
+                SELECT trade_id, symbol, timestamp_ms, side, realized_pnl, fee, note
+                FROM trades
+                WHERE user_discord_id = ?
+                  AND timestamp_ms >= ?
+                  AND symbol = ?
+                ORDER BY timestamp_ms DESC
+                LIMIT ? OFFSET ?
+            """
+            count_params = (discord_id, since_ms, symbol)
+            row_params = (discord_id, since_ms, symbol, limit, offset)
+        else:
+            count_sql = """
+                SELECT COUNT(*) AS total
+                FROM trades
+                WHERE user_discord_id = ?
+                  AND timestamp_ms >= ?
+            """
+            rows_sql = """
+                SELECT trade_id, symbol, timestamp_ms, side, realized_pnl, fee, note
+                FROM trades
+                WHERE user_discord_id = ?
+                  AND timestamp_ms >= ?
+                ORDER BY timestamp_ms DESC
+                LIMIT ? OFFSET ?
+            """
+            count_params = (discord_id, since_ms)
+            row_params = (discord_id, since_ms, limit, offset)
+
+        async with db.execute(count_sql, count_params) as count_cursor:
+            count_row = await count_cursor.fetchone()
+            total = int(count_row["total"]) if count_row is not None else 0
+
+        async with db.execute(rows_sql, row_params) as rows_cursor:
+            rows = await rows_cursor.fetchall()
+
+    trades: list[dict[str, Any]] = []
+    for row in rows:
+        trades.append(
+            {
+                "trade_id": row["trade_id"],
+                "symbol": row["symbol"],
+                "timestamp_ms": row["timestamp_ms"],
+                "side": row["side"],
+                "realized_pnl": row["realized_pnl"],
+                "fee": row["fee"],
+                "note": row["note"],
+            }
+        )
+
+    return trades, total

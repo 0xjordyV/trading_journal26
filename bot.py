@@ -2,13 +2,22 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
 from bitunix import bitunix_request, fetch_user_trades
-from db import delete_user, get_user, init_db, insert_trades, upsert_user
+from db import (
+    add_note,
+    delete_user,
+    get_user,
+    init_db,
+    insert_trades,
+    list_trades,
+    upsert_user,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -70,7 +79,7 @@ def build_bot(enable_members_intent: bool) -> commands.Bot:
         except Exception:
             logger.exception("Error guardando keys para user_id=%s", interaction.user.id)
             await interaction.response.send_message(
-                "Ocurrió un error guardando tus keys. Intenta de nuevo."
+                "Error interno (revisa consola)", ephemeral=True
             )
 
     @bot.tree.command(
@@ -90,7 +99,7 @@ def build_bot(enable_members_intent: bool) -> commands.Bot:
         except Exception:
             logger.exception("Error eliminando keys para user_id=%s", interaction.user.id)
             await interaction.response.send_message(
-                "Ocurrió un error eliminando tus keys. Intenta de nuevo."
+                "Error interno (revisa consola)", ephemeral=True
             )
 
     @bot.tree.command(
@@ -171,13 +180,120 @@ def build_bot(enable_members_intent: bool) -> commands.Bot:
                     f"Actualizado: {inserted_count} trades nuevos agregados.",
                     ephemeral=True,
                 )
-        except Exception as exc:
+        except Exception:
             logger.exception(
                 "Error en /update_journal user_id=%s symbol=%s",
                 interaction.user.id,
                 symbol,
             )
-            await interaction.followup.send(f"ERROR: {exc}", ephemeral=True)
+            await interaction.followup.send(
+                "Error interno (revisa consola)", ephemeral=True
+            )
+
+    @bot.tree.command(
+        name="add_note",
+        description="Agrega o actualiza una nota subjetiva para un trade.",
+    )
+    async def add_note_command(
+        interaction: discord.Interaction, trade_id: str, nota: str
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_id = str(interaction.user.id)
+
+        try:
+            updated = await add_note(discord_id=discord_id, trade_id=trade_id, note=nota)
+            if not updated:
+                await interaction.followup.send(
+                    "No encontré ese trade_id en tu journal. Primero corre /update_journal",
+                    ephemeral=True,
+                )
+                return
+
+            await interaction.followup.send(
+                f"Nota agregada al trade {trade_id}", ephemeral=True
+            )
+        except Exception:
+            logger.exception(
+                "Error en /add_note user_id=%s trade_id=%s",
+                interaction.user.id,
+                trade_id,
+            )
+            await interaction.followup.send(
+                "Error interno (revisa consola)", ephemeral=True
+            )
+
+    @bot.tree.command(
+        name="view_journal",
+        description="Muestra tu journal reciente con paginacion.",
+    )
+    async def view_journal(
+        interaction: discord.Interaction,
+        days: int = 7,
+        page: int = 1,
+        symbol: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        discord_id = str(interaction.user.id)
+
+        safe_days = max(1, days)
+        safe_page = max(1, page)
+        page_size = 10
+        offset = (safe_page - 1) * page_size
+        now_ms = int(time.time() * 1000)
+        since_ms = now_ms - (safe_days * 86400000)
+
+        try:
+            trades, total = await list_trades(
+                discord_id=discord_id,
+                since_ms=since_ms,
+                limit=page_size,
+                offset=offset,
+                symbol=symbol,
+            )
+
+            if total == 0:
+                await interaction.followup.send(
+                    "No hay trades en ese rango. Usa /update_journal", ephemeral=True
+                )
+                return
+
+            lines: list[str] = []
+            for trade in trades:
+                ts = int(trade.get("timestamp_ms") or 0)
+                date_str = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M")
+                line = (
+                    f"{date_str} | {trade.get('symbol') or '-'} {trade.get('side') or '-'}"
+                    f" | pnl={trade.get('realized_pnl') or 0} fee={trade.get('fee') or 0}"
+                    f" | id={trade.get('trade_id')}"
+                    f" | nota={trade.get('note') or '-'}"
+                )
+                lines.append(line)
+
+            title = f"Tu Journal - últimos {safe_days} días"
+            if symbol:
+                title = f"{title} ({symbol})"
+
+            embed = discord.Embed(
+                title=title,
+                description="\n".join(lines),
+                color=discord.Color.blue(),
+            )
+            embed.set_footer(
+                text=f"Página {safe_page} | Mostrando {len(trades)} de {total}"
+            )
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception:
+            logger.exception(
+                "Error en /view_journal user_id=%s days=%s page=%s symbol=%s",
+                interaction.user.id,
+                days,
+                page,
+                symbol,
+            )
+            await interaction.followup.send(
+                "Error interno (revisa consola)", ephemeral=True
+            )
 
     return bot
 
