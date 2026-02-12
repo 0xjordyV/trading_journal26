@@ -1,5 +1,5 @@
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import aiosqlite
 
@@ -101,3 +101,48 @@ async def delete_user(discord_id: str, db_path: str = DEFAULT_DB_PATH) -> None:
             (discord_id,),
         )
         await db.commit()
+
+
+async def insert_trades(
+    discord_id: str, trades: list[dict[str, Any]], db_path: str = DEFAULT_DB_PATH
+) -> int:
+    if not trades:
+        return 0
+
+    inserted = 0
+    async with aiosqlite.connect(db_path) as db:
+        for trade in trades:
+            cursor = await db.execute(
+                """
+                INSERT OR IGNORE INTO trades (
+                    user_discord_id,
+                    trade_id,
+                    symbol,
+                    timestamp_ms,
+                    side,
+                    qty,
+                    price,
+                    realized_pnl,
+                    fee,
+                    raw_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    discord_id,
+                    trade["trade_id"],
+                    trade.get("symbol"),
+                    trade.get("timestamp_ms"),
+                    trade.get("side"),
+                    trade.get("qty"),
+                    trade.get("price"),
+                    trade.get("realized_pnl"),
+                    trade.get("fee"),
+                    trade.get("raw_json"),
+                ),
+            )
+            inserted += max(cursor.rowcount, 0)
+
+        await db.commit()
+
+    return inserted
